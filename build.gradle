@@ -1,19 +1,290 @@
-
 buildscript {
-    repositories {
-        google()
-        jcenter()
-    }
-    dependencies {
-        classpath 'com.android.tools.build:gradle:3.4.2'
-        classpath 'com.jfrog.bintray.gradle:gradle-bintray-plugin:1.8.4'
-        classpath 'com.github.dcendents:android-maven-gradle-plugin:2.1'
-    }
+  if ("$gradle.gradleVersion" != "6.7") {
+    throw new GradleException("Gradle version 6.7 is required (received $gradle.gradleVersion)")
+  }
+
+  ext.kotlin_version = "1.4.20"
+
+  repositories {
+    mavenCentral()
+    google()
+    jcenter()
+  }
+
+  dependencies {
+    classpath "com.android.tools.build:gradle:4.1.2"
+    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    classpath "digital.wup:android-maven-publish:3.6.3"
+    classpath "com.vanniktech:gradle-android-junit-jacoco-plugin:0.16.0"
+    classpath "biz.aQute.bnd:biz.aQute.bnd.gradle:5.2.0"
+    classpath "de.undercouch:gradle-download-task:4.1.1"
+  }
 }
 
+plugins {
+  id "com.github.ben-manes.versions" version "0.28.0"
+  id "com.vanniktech.android.junit.jacoco" version "0.16.0"
+  id "digital.wup.android-maven-publish" version "3.6.3"
+  id "ru.vyarus.animalsniffer" version "1.5.0"
+}
+
+ext {
+  androidBuildToolsVersion = "29.0.2"
+  androidCompileSDKVersion = 28
+  androidMinimumSDKVersion = 21
+  androidTargetSDKVersion = 28
+
+  if (!project.hasProperty("mavenCentralUsername")) {
+    logger.warn("No mavenCentralUsername property specified: Using an empty value")
+    mavenCentralUsername = ""
+  }
+  if (!project.hasProperty("mavenCentralPassword")) {
+    logger.warn("No mavenCentralPassword property specified: Using an empty value")
+    mavenCentralPassword = ""
+  }
+
+  if (project.hasProperty("org.librarysimplified.directory.publish")) {
+    useDirectoryPublishPath = project.property("org.librarysimplified.directory.publish")
+    useDirectoryPublish = true
+    logger.warn("org.librarysimplified.directory.publish is set: We will publish artifacts to ${useDirectoryPublishPath}")
+  } else {
+    logger.warn("org.librarysimplified.directory.publish is not set: We will not publish artifacts to a custom directory")
+    useDirectoryPublish = false
+    useDirectoryPublishPath = null
+  }
+
+  if (project.hasProperty("org.librarysimplified.no_signing")) {
+    disableSigning = true
+    logger.warn("org.librarysimplified.no_signing is set: We will not sign artifacts")
+  } else {
+    disableSigning = false
+    logger.warn("org.librarysimplified.no_signing is not set: We will attempt to sign artifacts")
+  }
+}
+
+ext.versions = [
+  androidx_activity : '1.1.0',
+  androidx_appcompat: '1.2.0',
+  androidannotations: '4.6.0',
+]
+
+ext.libraries = [
+  pdfium_android         : "com.github.barteksc:pdfium-android:1.9.0",
+  androidx_activity      : "androidx.activity:activity:${versions.androidx_activity}",
+  androidx_appcompat     : "androidx.appcompat:appcompat:${versions.androidx_appcompat}",
+  androidannotations_api : "org.androidannotations:androidannotations-api:${versions.androidannotations}",
+  androidannotations_proc: "org.androidannotations:androidannotations:${versions.androidannotations}",
+]
+
+apply plugin: "com.vanniktech.android.junit.jacoco"
+apply plugin: "de.undercouch.download"
+
 allprojects {
-    repositories {
-        google()
-        jcenter()
+  group = project.ext["GROUP"]
+  version = project.ext["VERSION_NAME"]
+}
+
+subprojects { project ->
+
+  switch (POM_PACKAGING) {
+    case "jar":
+      logger.info("Configuring ${project} ${version} (${POM_PACKAGING}) as jar project")
+
+      apply plugin: "java"
+      apply plugin: "java-library"
+      apply plugin: "kotlin"
+
+      /*
+       * Apply the Animal Sniffer plugin to check that code is Android compatible.
+       */
+
+      apply plugin: "ru.vyarus.animalsniffer"
+
+      dependencies {
+        signature "org.codehaus.mojo.signature:java16:1.1@signature"
+        signature "net.sf.androidscents.signature:android-api-level-21:5.0.1_r2@signature"
+      }
+
+      /*
+       * Build an OSGi bundle.
+       */
+
+      apply plugin: "biz.aQute.bnd.builder"
+
+      jar {
+        bnd """
+Automatic-Module-Name: ${POM_AUTOMATIC_MODULE_NAME}
+
+-removeheaders: Bnd-LastModified, Tool, Private-Package
+"""
+      }
+      break
+
+    case "apk":
+      logger.info("Configuring ${project} ${version} (${POM_PACKAGING}) as Android application project")
+
+      apply plugin: "com.android.application"
+      apply plugin: "kotlin-android"
+
+      android {
+        compileSdkVersion androidCompileSDKVersion
+        buildToolsVersion androidBuildToolsVersion
+
+        defaultConfig {
+          minSdkVersion androidMinimumSDKVersion
+          targetSdkVersion androidTargetSDKVersion
+        }
+        compileOptions {
+          encoding 'UTF-8'
+          sourceCompatibility JavaVersion.VERSION_1_8
+          targetCompatibility JavaVersion.VERSION_1_8
+        }
+      }
+      break
+
+    case "aar":
+      logger.info("Configuring ${project} ${version} (${POM_PACKAGING}) as Android library project")
+
+      apply plugin: "com.android.library"
+      apply plugin: "kotlin-android"
+
+      android {
+        compileSdkVersion androidCompileSDKVersion
+        buildToolsVersion androidBuildToolsVersion
+
+        defaultConfig {
+          minSdkVersion androidMinimumSDKVersion
+          targetSdkVersion androidTargetSDKVersion
+          testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+          useLibrary 'org.apache.http.legacy'
+        }
+        compileOptions {
+          encoding 'UTF-8'
+          sourceCompatibility JavaVersion.VERSION_1_8
+          targetCompatibility JavaVersion.VERSION_1_8
+        }
+        testOptions {
+          execution 'ANDROIDX_TEST_ORCHESTRATOR'
+          animationsDisabled = true
+        }
+      }
+      break
+
+    default:
+      throw new IllegalStateException(
+        "Unrecognized packaging type ${POM_PACKAGING} for ${project}")
+  }
+
+  task javadocsJar(type: Jar) {
+    classifier = "javadoc"
+  }
+
+  task sourcesJar(type: Jar) {
+    classifier = "sources"
+    from "src/main/java", "src/main/resources"
+  }
+
+  apply plugin: "digital.wup.android-maven-publish"
+
+  publishing {
+    publications {
+      basicJar(MavenPublication) {
+
+        switch (POM_PACKAGING) {
+          case "jar":
+            from components.java
+            break
+
+          case "apk":
+            break
+
+          case "aar":
+            from components.android
+            break
+        }
+
+        artifact sourcesJar
+        artifact javadocsJar
+
+        pom {
+          artifactId = POM_ARTIFACT_ID
+          name = POM_NAME
+          packaging = POM_PACKAGING
+          description = POM_DESCRIPTION
+          url = POM_URL
+
+          scm {
+            connection = POM_SCM_CONNECTION
+            developerConnection = POM_SCM_DEV_CONNECTION
+            url = POM_SCM_URL
+          }
+
+          licenses {
+            license {
+              name = POM_LICENCE_NAME
+              url = POM_LICENCE_URL
+            }
+          }
+
+          developers {
+            developer {
+              id = POM_DEVELOPER_ID
+              name = POM_DEVELOPER_NAME
+              email = POM_DEVELOPER_EMAIL
+              url = POM_DEVELOPER_URL
+            }
+          }
+        }
+      }
     }
+
+    repositories {
+      if (useDirectoryPublish) {
+        logger.info("Using ${useDirectoryPublishPath} for publication")
+
+        maven {
+          name = "Directory"
+          url = "file://${useDirectoryPublishPath}"
+        }
+      }
+
+      if (version.endsWith("SNAPSHOT")) {
+        logger.info("Using Sonatype snapshots repository for publication")
+        maven {
+          url = "https://oss.sonatype.org/content/repositories/snapshots/"
+          credentials(PasswordCredentials) {
+            username mavenCentralUsername
+            password mavenCentralPassword
+          }
+        }
+      }
+    }
+  }
+
+  if (!disableSigning) {
+    apply plugin: "signing"
+
+    signing {
+      useGpgCmd()
+      sign publishing.publications.basicJar
+    }
+  }
+
+  repositories {
+    mavenLocal()
+    mavenCentral()
+    google()
+  }
+}
+
+/**
+ * Empty tasks called by CI. We don't do semantic versioning analysis or linting here yet.
+ */
+
+task verifySemanticVersioning {
+
+}
+
+task ktlint {
+
 }
